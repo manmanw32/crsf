@@ -1,11 +1,7 @@
 services:
   - type: web
     name: artlist-csrf-api
-    env: node
+    env: docker
     plan: free
-    buildCommand: npm ci && npx puppeteer browsers install chrome
-    startCommand: node index.js
+    dockerfilePath: ./Dockerfile
     autoDeploy: true
-    envVars:
-      NODE_VERSION: 20
-      PUPPETEER_CACHE_DIR: /opt/render/.cache/puppeteer
