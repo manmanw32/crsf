@@ -26,19 +26,22 @@ function traceHeaders() {
   };
 }
 
-/* find Chrome that was installed in the build step */
+/* find Chrome (Docker installs it at /usr/bin/google-chrome-stable) */
 async function findChrome() {
-  const cache = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
-  const pattern = path.join(cache, 'chrome', 'linux-*', 'chrome');
-  try {
-    const { glob } = await import('glob');
-    const matches = await glob(pattern);
-    if (matches.length) {
-      console.log('Chrome found:', matches[0]);
-      return matches[0];
-    }
-  } catch (_) {}
-  return null;
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+    '/opt/render/.cache/puppeteer/chrome/linux-*/chrome',
+    '/usr/bin/chromium-browser',
+  ];
+
+  for (const execPath of candidates) {
+    try {
+      await fs.access(execPath);
+      console.log('Chrome found:', execPath);
+      return execPath;
+    } catch (_) {}
+  }
+  throw new Error('Chrome not found. Ensure Dockerfile installs it.');
 }
 
 /* ---------- endpoint ---------- */
@@ -46,7 +49,6 @@ app.post('/get-csrf', async (req, res) => {
   let browser = null;
   try {
     const chromePath = await findChrome();
-    if (!chromePath) throw new Error('Chrome not installed – build must run `npx puppeteer browsers install chrome`');
 
     browser = await puppeteer.launch({
       headless: true,
