@@ -2,12 +2,12 @@ import express from 'express';
 import fetch from 'node-fetch';
 
 const app = express();
-app.use(express.json();
+app.use(express.json());   // <-- FIXED: added missing )
 
 /* -------------------------------------------------------------
-   CONFIG
+   CONFIG – Production Browserless endpoint (v2)
    ------------------------------------------------------------- */
-const TOKEN = process.env.BROWSERLESS_TOKEN || 'YOUR_TOKEN';
+const TOKEN = process.env.BROWSERLESS_TOKEN || 'YOUR_TOKEN_HERE';
 const CONTENT_URL = `https://production-sfo.browserless.io/content?token=${TOKEN}`;
 const SCREENSHOT_URL = `https://production-sfo.browserless.io/screenshot?token=${TOKEN}`;
 
@@ -30,10 +30,9 @@ function traceHeaders() {
 }
 
 /* -------------------------------------------------------------
-   Try /content → fallback to /screenshot if HTML
+   Get cookies – /content → fallback /screenshot if HTML
    ------------------------------------------------------------- */
 async function getCookiesFromBrowserless() {
-  // 1. Try /content (preferred)
   const payload = {
     url: REFERER_URL,
     gotoOptions: { waitUntil: 'networkidle2', timeout: 60000 },
@@ -41,6 +40,7 @@ async function getCookiesFromBrowserless() {
     viewport: { width: 1280, height: 720 },
   };
 
+  // Try /content first
   const resp = await fetch(CONTENT_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -54,10 +54,9 @@ async function getCookiesFromBrowserless() {
     throw new Error(`Browserless failed: ${resp.status}`);
   }
 
-  // If response starts with < → it's HTML (CF challenge, login, etc.)
-  if (text.trim().startsWith('<')) {
-    console.warn('Received HTML from /content → falling back to /screenshot');
-    // Fallback: use /screenshot (still returns cookies)
+  // If we get HTML → Cloudflare block → fallback to /screenshot
+  if (text.trimStart().startsWith('<')) {
+    console.warn('HTML received → using /screenshot fallback');
     const shotResp = await fetch(SCREENSHOT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -67,14 +66,13 @@ async function getCookiesFromBrowserless() {
     return shotData.cookies || [];
   }
 
-  // Normal JSON response
+  // Normal JSON
   let data;
   try {
     data = JSON.parse(text);
   } catch (e) {
-    throw new Error(`Invalid JSON from Browserless: ${text.slice(0, 100)}`);
+    throw new Error(`Invalid JSON: ${text.slice(0, 100)}`);
   }
-
   return data.cookies || [];
 }
 
@@ -86,10 +84,10 @@ app.post('/get-csrf', async (req, res) => {
     console.log('Fetching cookies via Browserless...');
     const cookies = await getCookiesFromBrowserless();
 
-    if (cookies.length === 0) {
+    if (!cookies.length) {
       return res.status(502).json({
         success: false,
-        error: 'No cookies received (possible Cloudflare block)',
+        error: 'No cookies (possible Cloudflare block)',
       });
     }
 
@@ -104,6 +102,7 @@ app.post('/get-csrf', async (req, res) => {
         accept: '*/*',
         'accept-language': 'en-US,en;q=0.9',
         'content-type': 'application/json',
+        priority: 'u=1, i',
         referer: REFERER_URL,
         'sec-ch-ua': '"Google Chrome";v="141", "Not)A;Brand";v="8", "Chromium";v="141"',
         'sec-ch-ua-mobile': '?0',
@@ -139,22 +138,22 @@ app.post('/get-csrf', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('CSRF error:', err.message);
+    console.error('Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 /* -------------------------------------------------------------
-   Health
+   Health check
    ------------------------------------------------------------- */
 app.get('/', (req, res) => {
   res.json({ status: 'ok', endpoint: 'POST /get-csrf' });
 });
 
 /* -------------------------------------------------------------
-   Start
+   Start server
    ------------------------------------------------------------- */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server live on ${PORT}`);
+  console.log(`Server running on http://0.0.0.0:${PORT}`);
 });
