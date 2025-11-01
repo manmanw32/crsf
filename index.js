@@ -2,7 +2,6 @@ import express from 'express';
 import puppeteer from 'puppeteer';
 import fs from 'fs/promises';
 import path from 'path';
-import os from 'os';
 
 const app = express();
 app.use(express.json());
@@ -10,7 +9,7 @@ app.use(express.json());
 // === CONFIG ===
 const REFERER_URL = 'https://artlist.io/voice-over';
 const API_URL = 'https://artlist.io/api/auth/csrf';
-const USER_DATA_DIR = './puppeteer_user_data'; // Persistent storage
+const USER_DATA_DIR = './puppeteer_user_data';
 const PUPPETEER_CACHE = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
 
 // Ensure dirs
@@ -28,16 +27,54 @@ function generateTraceHeaders() {
   };
 }
 
+// === FIND CHROME ===
+async function findChrome() {
+  const candidates = [
+    '/opt/render/.cache/puppeteer/chrome/linux-*/chrome',
+    path.join(PUPPETEER_CACHE, 'chrome', 'linux-*', 'chrome'),
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium-browser',
+  ];
+
+  for (const pattern of candidates) {
+    try {
+      const files = await import('glob').then(m => m.glob(pattern));
+      if (files?.length > 0) {
+        const stat = await fs.stat(files[0]);
+        if (stat.isFile()) {
+          console.log('Chrome found:', files[0]);
+          return files[0];
+        }
+      }
+    } catch (e) {}
+  }
+
+  try {
+    const cacheDir = path.dirname(candidates[1]);
+    const entries = await fs.readdir(cacheDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.startsWith('chrome-linux')) {
+        const chromePath = path.join(cacheDir, entry.name, 'chrome');
+        const stat = await fs.stat(chromePath);
+        if (stat.isFile()) {
+          console.log('Chrome found in cache:', chromePath);
+          return chromePath;
+        }
+      }
+    }
+  } catch (e) {}
+
+  return null;
+}
+
 // === MAIN ENDPOINT ===
 app.post('/get-csrf', async (req, res) => {
   let browser = null;
   try {
     console.log('Launching Puppeteer...');
-
-    // Find Chrome executable (installed by `npx puppeteer browsers install chrome`)
     const chromePath = await findChrome();
     if (!chromePath) {
-      throw new Error('Chrome not found. Build must run: npx puppeteer browsers install chrome');
+      throw new Error('Chrome not found. Run: npx puppeteer browsers install chrome');
     }
 
     browser = await puppeteer.launch({
@@ -49,22 +86,17 @@ app.post('/get-csrf', async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-web-security',
         '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-g |
         '--disable-gpu',
         '--no-zygote',
         '--single-process',
         '--disable-dev-shm-usage',
         '--disable-extensions',
         '--disable-default-apps',
-        '--disable-component-extensions-with-background-pages',
         '--disable-background-networking',
         '--disable-sync',
-        '--metrics-recording-only',
         '--mute-audio',
         '--no-first-run',
         '--safebrowsing-disable-auto-update',
-        '--disable-features=TranslateUI',
-        '--disable-component-update',
       ],
       defaultViewport: null,
       timeout: 60000,
@@ -72,7 +104,6 @@ app.post('/get-csrf', async (req, res) => {
 
     const page = await browser.newPage();
 
-    // Set realistic headers
     await page.setExtraHTTPHeaders({
       'accept': '*/*',
       'accept-language': 'en-US,en;q=0.9,hi;q=0.8',
@@ -84,9 +115,8 @@ app.post('/get-csrf', async (req, res) => {
 
     console.log('Navigating to trigger Cloudflare...');
     await page.goto(REFERER_URL, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForTimeout(8000); // Let CF challenge resolve
+    await page.waitForTimeout(8000);
 
-    // Capture cookies
     const cookies = await page.cookies();
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     const cookieString = cookies.map(c => `${c.name}=${encodeURIComponent(c.value)}`).join('; ');
@@ -155,9 +185,7 @@ app.post('/get-csrf', async (req, res) => {
     });
   } finally {
     if (browser) {
-      try {
-        await browser.close();
-      } catch (e) {}
+      try { await browser.close(); } catch (e) {}
     }
   }
 });
@@ -171,55 +199,8 @@ app.get('/', (req, res) => {
   });
 });
 
-// === FIND CHROME (Critical for Render) ===
-async function findChrome() {
-  const candidates = [
-    // Render cache
-    '/opt/render/.cache/puppeteer/chrome/linux-*/chrome',
-    // Default Puppeteer install
-    path.join(PUPPETEER_CACHE, 'chrome', 'linux-*', 'chrome'),
-    // Fallback
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-  ];
-
-  for (const pattern of candidates) {
-    try {
-      const files = await fs.glob(pattern);
-      if (files.length > 0) {
-        const stat = await fs.stat(files[0]);
-        if (stat.isFile()) {
-          console.log('Chrome found:', files[0]);
-          return files[0];
-        }
-      }
-    } catch (e) {}
-  }
-
-  // Manual search in cache
-  try {
-    const cacheDir = path.dirname(candidates[1]);
-    const entries = await fs.readdir(cacheDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name.startsWith('chrome-linux')) {
-        const chromePath = path.join(cacheDir, entry.name, 'chrome');
-        const stat = await fs.stat(chromePath);
-        if (stat.isFile()) {
-          console.log('Chrome found in cache:', chromePath);
-          return chromePath;
-        }
-      }
-    }
-  } catch (e) {}
-
-  return null;
-}
-
-// === START SERVER ===
+// === START ===
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`CSRF API running on port ${PORT}`);
-  console.log(`Health: http://localhost:${PORT}`);
-  console.log(`Get CSRF: POST http://localhost:${PORT}/get-csrf`);
 });
