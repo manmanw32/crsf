@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: artlist-csrf-api
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node index.js
+    autoDeploy: true
+    envVars:
+      NODE_VERSION: 20
