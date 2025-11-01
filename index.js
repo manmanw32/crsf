@@ -1,24 +1,26 @@
 import express from 'express';
-import puppeteer from 'puppeteer';
-import fs from 'fs/promises';
-import path from 'path';
+import fetch from 'node-fetch';   // node-fetch v3+ (ESM)
 
 const app = express();
 app.use(express.json());
 
+/* -------------------------------------------------------------
+   CONFIG – put your Browserless token here (or use env var)
+   ------------------------------------------------------------- */
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '2SSAwtJD82odF6zde50181b77f720b09476827ac6cc05f60b';
+const BROWSERLESS_URL   = `https://chrome.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
+
 const REFERER_URL = 'https://artlist.io/voice-over';
-const API_URL = 'https://artlist.io/api/auth/csrf';
-const USER_DATA_DIR = './puppeteer_user_data';
+const CSRF_API    = 'https://artlist.io/api/auth/csrf';
 
-// Ensure user data directory exists
-await fs.mkdir(USER_DATA_DIR, { recursive: true }).catch(() => {});
-
+/* -------------------------------------------------------------
+   Helper – random trace headers (keeps Artlist happy)
+   ------------------------------------------------------------- */
 function randomHex(len) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 }
-
 function traceHeaders() {
-  const trace = randomHex(32);
+  const trace  = randomHex(32);
   const parent = randomHex(16);
   return {
     'sentry-trace': `${trace}-${parent}-0`,
@@ -28,137 +30,78 @@ function traceHeaders() {
   };
 }
 
-// Robust Chrome path detection
-async function findChrome() {
-  const candidates = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/chromium-browser',
-    '/opt/google/chrome/chrome',
-  ].filter(Boolean);
-
-  for (const execPath of candidates) {
-    try {
-      await fs.access(execPath);
-      console.log(`Chrome found at: ${execPath}`);
-      return execPath;
-    } catch (_) {}
-  }
-
-  // Final fallback: try to run `which google-chrome`
-  try {
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-    const { stdout } = await execAsync('which google-chrome || which google-chrome-stable || which chromium-browser', { timeout: 5000 });
-    const path = stdout.trim();
-    if (path) {
-      console.log(`Chrome discovered via 'which': ${path}`);
-      return path;
-    }
-  } catch (_) {}
-
-  throw new Error('Chrome not found. Ensure google-chrome-stable is installed and at /usr/bin/google-chrome');
-}
-
+/* -------------------------------------------------------------
+   POST /get-csrf
+   ------------------------------------------------------------- */
 app.post('/get-csrf', async (req, res) => {
-  let browser = null;
   try {
-    const chromePath = await findChrome();
+    console.log('Opening page via Browserless...');
 
-    console.log('Launching Puppeteer...');
-    browser = await puppeteer.launch({
-      headless: true,
-      userDataDir: USER_DATA_DIR,
-      executablePath: chromePath,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--disable-gpu',
-        '--no-zygote',
-        '--single-process',
-        '--disable-dev-shm-usage',
-        '--disable-extensions',
-        '--mute-audio',
-        '--no-first-run',
-        '--disable-background-timer-throttling',
-        '--disable-renderer-backgrounding',
-        '--disable-features=ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose,SSDService',
-      ],
-      defaultViewport: null,
-      ignoreHTTPSErrors: true,
+    // 1. Load the page + wait
+    const blResp = await fetch(BROWSERLESS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: REFERER_URL,
+        gotoOptions: { waitUntil: 'networkidle2', timeout: 60000 },
+        waitFor: 8000,                     // same 8 s pause you had
+        // realistic headers (helps bypass Cloudflare)
+        headers: {
+          'accept-language': 'en-US,en;q=0.9',
+          'sec-ch-ua': '"Google Chrome";v="141", "Not)A;Brand";v="8", "Chromium";v="141"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"Windows"',
+          'user-agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        },
+      }),
     });
 
-    const page = await browser.newPage();
+    if (!blResp.ok) {
+      const txt = await blResp.text();
+      throw new Error(`Browserless error ${blResp.status}: ${txt}`);
+    }
 
-    // Set realistic headers
-    await page.setExtraHTTPHeaders({
-      'accept': '*/*',
-      'accept-language': 'en-US,en;q=0.9',
-      'sec-ch-ua': '"Google Chrome";v="141", "Not)A;Brand";v="8", "Chromium";v="141"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-    });
+    const { cookies = [] } = await blResp.json();
 
-    console.log('Navigating to Artlist...');
-    await page.goto(REFERER_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-    await page.waitForTimeout(8_000);
-
-    const cookies = await page.cookies();
+    // Build cookie strings for the CSRF request
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     const cookieString = cookies.map(c => `${c.name}=${encodeURIComponent(c.value)}`).join('; ');
 
-    const headers = {
-      'accept': '*/*',
-      'accept-language': 'en-US,en;q=0.9',
-      'content-type': 'application/json',
-      'priority': 'u=1, i',
-      'referer': REFERER_URL,
-      'sec-ch-ua': '"Google Chrome";v="141", "Not)A;Brand";v="8", "Chromium";v="141"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-origin',
-      'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-      'cookie': cookieHeader,
-      ...traceHeaders(),
-    };
+    console.log('Fetched cookies, calling CSRF API...');
 
-    console.log('Fetching CSRF token...');
-    const resp = await page.evaluate(async (url, hdrs) => {
-      try {
-        const r = await fetch(url, {
-          method: 'GET',
-          headers: hdrs,
-          credentials: 'include',
-        });
-        const txt = await r.text();
-        return { ok: r.ok, status: r.status, body: txt };
-      } catch (e) {
-        return { ok: false, status: 0, body: e.message };
-      }
-    }, API_URL, headers);
+    // 2. Call the CSRF endpoint
+    const csrfResp = await fetch(CSRF_API, {
+      method: 'GET',
+      headers: {
+        accept: '*/*',
+        'accept-language': 'en-US,en;q=0.9',
+        'content-type': 'application/json',
+        priority: 'u=1, i',
+        referer: REFERER_URL,
+        'sec-ch-ua': '"Google Chrome";v="141", "Not)A;Brand";v="8", "Chromium";v="141"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        cookie: cookieHeader,
+        ...traceHeaders(),
+      },
+    });
 
-    if (!resp.ok) {
-      throw new Error(`CSRF request failed: ${resp.status} ${resp.body}`);
-    }
+    const csrfText = await csrfResp.text();
+    if (!csrfResp.ok) throw new Error(`CSRF API ${csrfResp.status}: ${csrfText}`);
 
     let csrfToken = null;
     try {
-      const json = JSON.parse(resp.body);
+      const json = JSON.parse(csrfText);
       csrfToken = json.csrfToken ?? json.token ?? json.data?.csrfToken ?? null;
-    } catch (e) {
-      console.warn('Failed to parse CSRF JSON:', e.message);
-    }
+    } catch (_) {}
 
-    if (!csrfToken) {
-      throw new Error('CSRF token not found in response');
-    }
+    if (!csrfToken) throw new Error('CSRF token not found in response');
 
     const cfClearance = cookies.find(c => c.name === 'cf_clearance')?.value ?? null;
 
@@ -169,38 +112,33 @@ app.post('/get-csrf', async (req, res) => {
       cf_clearance: cfClearance,
       timestamp: new Date().toISOString(),
     });
-
   } catch (err) {
-    console.error('CSRF Error:', err);
+    console.error('CSRF error:', err);
     res.status(500).json({
       success: false,
       error: err.message,
       timestamp: new Date().toISOString(),
     });
-  } finally {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch (e) {
-        console.warn('Browser close error:', e.message);
-      }
-    }
   }
 });
 
-// Health check
+/* -------------------------------------------------------------
+   Health check
+   ------------------------------------------------------------- */
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
-    message: 'POST /get-csrf to retrieve Artlist CSRF token',
+    message: 'POST /get-csrf → Artlist CSRF token (Browserless)',
     timestamp: new Date().toISOString(),
   });
 });
 
-// Start server
+/* -------------------------------------------------------------
+   Start server
+   ------------------------------------------------------------- */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Health: http://localhost:${PORT}/`);
+  console.log(`Server listening on ${PORT}`);
+  console.log(`Health:   http://localhost:${PORT}/`);
   console.log(`Endpoint: POST http://localhost:${PORT}/get-csrf`);
 });
