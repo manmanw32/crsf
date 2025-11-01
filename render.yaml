@@ -1,7 +1,38 @@
+# ------------------------------------------------------------
+# Render Web Service – Artlist CSRF (Browserless)
+# ------------------------------------------------------------
 services:
+  # -----------------------------------------------------------------
+  # 1. Web Service (Node.js)
+  # -----------------------------------------------------------------
   - type: web
-    name: artlist-csrf-api
-    env: docker
-    plan: free
-    dockerfilePath: ./Dockerfile
+    name: artlist-csrf
+    env: node
+    region: oregon               # or any region you prefer
+    plan: free                   # works perfectly on free tier
+    branch: main                 # change if you use another branch
+
+    # ---- Build --------------------------------------------------------
+    buildCommand: npm ci
+
+    # ---- Start ---------------------------------------------------------
+    startCommand: npm start
+
+    # ---- Port ----------------------------------------------------------
+    # Render forwards traffic to this port
+    envVars:
+      PORT: "10000"
+
+      # --------------------------------------------------------------
+      # YOUR BROWSERLESS TOKEN – **REQUIRED**
+      # --------------------------------------------------------------
+      BROWSERLESS_TOKEN:
+        # Put your real token here OR set it in the Render dashboard
+        value: "YOUR_BROWSERLESS_TOKEN_HERE"
+
+    # ---- Health check (optional but recommended) --------------------
+    healthCheckPath: /
+    healthCheckTimeout: 30   # seconds
+
+    # ---- Auto-deploy on push ----------------------------------------
     autoDeploy: true
