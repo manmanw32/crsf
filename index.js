@@ -5,7 +5,7 @@ const app = express();
 app.use(express.json());
 
 /* -------------------------------------------------------------
-   CONFIG – Production Browserless endpoint
+   CONFIG – Production Browserless endpoint (v2)
    ------------------------------------------------------------- */
 const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || 'YOUR_TOKEN_HERE';
 const BROWSERLESS_URL   = `https://production-sfo.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
@@ -14,7 +14,7 @@ const REFERER_URL = 'https://artlist.io/voice-over';
 const CSRF_API    = 'https://artlist.io/api/auth/csrf';
 
 /* -------------------------------------------------------------
-   Helper – random trace headers (keeps Artlist happy)
+   Helper – random trace headers
    ------------------------------------------------------------- */
 function randomHex(len) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');
@@ -35,32 +35,14 @@ function traceHeaders() {
    ------------------------------------------------------------- */
 app.post('/get-csrf', async (req, res) => {
   try {
-    console.log('Launching remote Chrome via Browserless...');
+    console.log('Launching Browserless (v2) session...');
 
-    // ---- 1. Browserless payload (only allowed fields) ----
+    // ONLY ALLOWED FIELDS
     const payload = {
       url: REFERER_URL,
       gotoOptions: { waitUntil: 'networkidle2', timeout: 60000 },
-
-      // 8-second pause after network idle
-      waitForTimeout: 8000,
-
-      // JavaScript that runs *inside* the page
-      code: `
-        // Set realistic headers (helps Cloudflare)
-        await fetch('https://artlist.io/', { method: 'HEAD' }); // dummy request to force headers
-
-        // Return all cookies
-        const cookies = document.cookie
-          .split(';')
-          .map(c => c.trim())
-          .filter(Boolean)
-          .map(c => {
-            const [name, ...valParts] = c.split('=');
-            return { name, value: decodeURIComponent(valParts.join('=')) };
-          });
-        return { cookies };
-      `,
+      waitForTimeout: 8000,           // 8 seconds after network idle
+      viewport: { width: 1280, height: 720 },
     };
 
     const blResp = await fetch(BROWSERLESS_URL, {
@@ -74,15 +56,16 @@ app.post('/get-csrf', async (req, res) => {
       throw new Error(`Browserless ${blResp.status}: ${txt}`);
     }
 
-    const { cookies = [] } = await blResp.json();
+    const data = await blResp.json();
 
-    // Build cookie strings for the CSRF request
+    // Browserless v2 returns cookies directly
+    const cookies = data.cookies || [];
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     const cookieString = cookies.map(c => `${c.name}=${encodeURIComponent(c.value)}`).join('; ');
 
-    console.log('Got cookies, calling CSRF API...');
+    console.log(`Got ${cookies.length} cookies, calling CSRF API...`);
 
-    // ---- 2. Call Artlist CSRF endpoint ----
+    // Call CSRF endpoint
     const csrfResp = await fetch(CSRF_API, {
       method: 'GET',
       headers: {
@@ -97,8 +80,7 @@ app.post('/get-csrf', async (req, res) => {
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-origin',
-        'user-agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
         cookie: cookieHeader,
         ...traceHeaders(),
       },
@@ -125,7 +107,7 @@ app.post('/get-csrf', async (req, res) => {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    console.error('CSRF error:', err);
+    console.error('Error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -134,7 +116,7 @@ app.post('/get-csrf', async (req, res) => {
    Health check
    ------------------------------------------------------------- */
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', endpoint: 'POST /get-csrf' });
+  res.json({ status: 'ok', endpoint: 'POST /get-csrf', docs: 'https://docs.browserless.io' });
 });
 
 /* -------------------------------------------------------------
@@ -142,5 +124,5 @@ app.get('/', (req, res) => {
    ------------------------------------------------------------- */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
