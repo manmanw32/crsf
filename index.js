@@ -1,20 +1,20 @@
 import express from 'express';
-import fetch from 'node-fetch';   // node-fetch v3+ (ESM)
+import fetch from 'node-fetch';
 
 const app = express();
 app.use(express.json());
 
 /* -------------------------------------------------------------
-   CONFIG – put your Browserless token here (or use env var)
+   CONFIG – Updated for Browserless production endpoint
    ------------------------------------------------------------- */
-const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '';
-const BROWSERLESS_URL   = `https://chrome.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || 'YOUR_TOKEN_HERE';
+const BROWSERLESS_URL   = `https://production-sfo.browserless.io/content?token=${BROWSERLESS_TOKEN}`;  // Fixed: New production URL
 
 const REFERER_URL = 'https://artlist.io/voice-over';
 const CSRF_API    = 'https://artlist.io/api/auth/csrf';
 
 /* -------------------------------------------------------------
-   Helper – random trace headers (keeps Artlist happy)
+   Helper – random trace headers
    ------------------------------------------------------------- */
 function randomHex(len) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');
@@ -37,40 +37,37 @@ app.post('/get-csrf', async (req, res) => {
   try {
     console.log('Opening page via Browserless...');
 
-    // 1. Load the page + wait
     const blResp = await fetch(BROWSERLESS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url: REFERER_URL,
         gotoOptions: { waitUntil: 'networkidle2', timeout: 60000 },
-        waitFor: 8000,                     // same 8 s pause you had
-        // realistic headers (helps bypass Cloudflare)
+        waitFor: 8000,
         headers: {
           'accept-language': 'en-US,en;q=0.9',
           'sec-ch-ua': '"Google Chrome";v="141", "Not)A;Brand";v="8", "Chromium";v="141"',
           'sec-ch-ua-mobile': '?0',
           'sec-ch-ua-platform': '"Windows"',
-          'user-agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
         },
       }),
     });
 
     if (!blResp.ok) {
       const txt = await blResp.text();
+      if (blResp.status === 403) {
+        throw new Error(`403 Forbidden: Invalid token or legacy endpoint. Use https://production-sfo.browserless.io and check your BROWSERLESS_TOKEN.`);
+      }
       throw new Error(`Browserless error ${blResp.status}: ${txt}`);
     }
 
     const { cookies = [] } = await blResp.json();
-
-    // Build cookie strings for the CSRF request
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     const cookieString = cookies.map(c => `${c.name}=${encodeURIComponent(c.value)}`).join('; ');
 
-    console.log('Fetched cookies, calling CSRF API...');
+    console.log('Calling CSRF API...');
 
-    // 2. Call the CSRF endpoint
     const csrfResp = await fetch(CSRF_API, {
       method: 'GET',
       headers: {
@@ -85,8 +82,7 @@ app.post('/get-csrf', async (req, res) => {
         'sec-fetch-dest': 'empty',
         'sec-fetch-mode': 'cors',
         'sec-fetch-site': 'same-origin',
-        'user-agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
         cookie: cookieHeader,
         ...traceHeaders(),
       },
@@ -101,7 +97,7 @@ app.post('/get-csrf', async (req, res) => {
       csrfToken = json.csrfToken ?? json.token ?? json.data?.csrfToken ?? null;
     } catch (_) {}
 
-    if (!csrfToken) throw new Error('CSRF token not found in response');
+    if (!csrfToken) throw new Error('CSRF token not found');
 
     const cfClearance = cookies.find(c => c.name === 'cf_clearance')?.value ?? null;
 
@@ -113,32 +109,16 @@ app.post('/get-csrf', async (req, res) => {
       timestamp: new Date().toISOString(),
     });
   } catch (err) {
-    console.error('CSRF error:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      timestamp: new Date().toISOString(),
-    });
+    console.error('Error:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-/* -------------------------------------------------------------
-   Health check
-   ------------------------------------------------------------- */
 app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    message: 'POST /get-csrf → Artlist CSRF token (Browserless)',
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ status: 'ok', endpoint: 'POST /get-csrf' });
 });
 
-/* -------------------------------------------------------------
-   Start server
-   ------------------------------------------------------------- */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on ${PORT}`);
-  console.log(`Health:   http://localhost:${PORT}/`);
-  console.log(`Endpoint: POST http://localhost:${PORT}/get-csrf`);
+  console.log(`Server running on port ${PORT}`);
 });
