@@ -3,7 +3,7 @@ services:
     name: artlist-csrf-api
     env: node
     plan: free
-    buildCommand: npm install && npx puppeteer browsers install chrome
+    buildCommand: npm ci && npx puppeteer browsers install chrome
     startCommand: node index.js
     autoDeploy: true
     envVars:
