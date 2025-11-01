@@ -7,7 +7,7 @@ app.use(express.json());
 /* -------------------------------------------------------------
    CONFIG – put your Browserless token here (or use env var)
    ------------------------------------------------------------- */
-const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '2SSAwtJD82odF6zde50181b77f720b09476827ac6cc05f60b';
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || '';
 const BROWSERLESS_URL   = `https://chrome.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
 
 const REFERER_URL = 'https://artlist.io/voice-over';
