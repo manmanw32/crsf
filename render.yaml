@@ -3,8 +3,9 @@ services:
     name: artlist-csrf-api
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npx puppeteer browsers install chrome
     startCommand: node index.js
     autoDeploy: true
     envVars:
       NODE_VERSION: 20
+      PUPPETEER_CACHE_DIR: /opt/render/.cache/puppeteer
