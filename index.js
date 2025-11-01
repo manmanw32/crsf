@@ -11,7 +11,6 @@ const API_URL = 'https://artlist.io/api/auth/csrf';
 const USER_DATA_DIR = './puppeteer_user_data';
 await fs.mkdir(USER_DATA_DIR, { recursive: true });
 
-/* ---------- helpers ---------- */
 function randomHex(len) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 }
@@ -26,10 +25,11 @@ function traceHeaders() {
   };
 }
 
-/* find Chrome (Docker installs it at /usr/bin/google-chrome-stable) */
 async function findChrome() {
   const candidates = [
-    process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',  // Correct path for google-chrome-stable
+    process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
     '/opt/render/.cache/puppeteer/chrome/linux-*/chrome',
     '/usr/bin/chromium-browser',
   ];
@@ -41,10 +41,9 @@ async function findChrome() {
       return execPath;
     } catch (_) {}
   }
-  throw new Error('Chrome not found. Ensure Dockerfile installs it.');
+  throw new Error('Chrome not found. Verify Dockerfile installation and path.');
 }
 
-/* ---------- endpoint ---------- */
 app.post('/get-csrf', async (req, res) => {
   let browser = null;
   try {
@@ -82,7 +81,7 @@ app.post('/get-csrf', async (req, res) => {
 
     console.log('Navigating...');
     await page.goto(REFERER_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
-    await page.waitForTimeout(8_000);   // give Cloudflare time
+    await page.waitForTimeout(8_000);
 
     const cookies = await page.cookies();
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
@@ -135,7 +134,6 @@ app.post('/get-csrf', async (req, res) => {
   }
 });
 
-/* health */
 app.get('/', (req, res) => res.json({ status: 'ok', endpoint: 'POST /get-csrf' }));
 
 const PORT = process.env.PORT || 3000;
