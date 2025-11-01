@@ -2,32 +2,80 @@ import express from 'express';
 import fetch from 'node-fetch';
 
 const app = express();
-app.use(express.json());
+app.use(express.json();
 
 /* -------------------------------------------------------------
-   CONFIG – Production Browserless endpoint (v2)
+   CONFIG
    ------------------------------------------------------------- */
-const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN || 'YOUR_TOKEN_HERE';
-const BROWSERLESS_URL   = `https://production-sfo.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
+const TOKEN = process.env.BROWSERLESS_TOKEN || 'YOUR_TOKEN';
+const CONTENT_URL = `https://production-sfo.browserless.io/content?token=${TOKEN}`;
+const SCREENSHOT_URL = `https://production-sfo.browserless.io/screenshot?token=${TOKEN}`;
 
 const REFERER_URL = 'https://artlist.io/voice-over';
 const CSRF_API    = 'https://artlist.io/api/auth/csrf';
 
 /* -------------------------------------------------------------
-   Helper – random trace headers
+   Helpers
    ------------------------------------------------------------- */
 function randomHex(len) {
   return Array.from({ length: len }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 }
 function traceHeaders() {
-  const trace  = randomHex(32);
+  const trace = randomHex(32);
   const parent = randomHex(16);
   return {
     'sentry-trace': `${trace}-${parent}-0`,
     'traceparent': `00-0000000000000000${trace}-${parent}-01`,
-    'x-datadog-trace-id': Math.floor(Math.random() * 1e15).toString(),
-    'x-datadog-parent-id': Math.floor(Math.random() * 1e15).toString(),
   };
+}
+
+/* -------------------------------------------------------------
+   Try /content → fallback to /screenshot if HTML
+   ------------------------------------------------------------- */
+async function getCookiesFromBrowserless() {
+  // 1. Try /content (preferred)
+  const payload = {
+    url: REFERER_URL,
+    gotoOptions: { waitUntil: 'networkidle2', timeout: 60000 },
+    waitForTimeout: 8000,
+    viewport: { width: 1280, height: 720 },
+  };
+
+  const resp = await fetch(CONTENT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await resp.text();
+
+  if (!resp.ok) {
+    console.warn(`Browserless /content ${resp.status}: ${text}`);
+    throw new Error(`Browserless failed: ${resp.status}`);
+  }
+
+  // If response starts with < → it's HTML (CF challenge, login, etc.)
+  if (text.trim().startsWith('<')) {
+    console.warn('Received HTML from /content → falling back to /screenshot');
+    // Fallback: use /screenshot (still returns cookies)
+    const shotResp = await fetch(SCREENSHOT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const shotData = await shotResp.json();
+    return shotData.cookies || [];
+  }
+
+  // Normal JSON response
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`Invalid JSON from Browserless: ${text.slice(0, 100)}`);
+  }
+
+  return data.cookies || [];
 }
 
 /* -------------------------------------------------------------
@@ -35,44 +83,27 @@ function traceHeaders() {
    ------------------------------------------------------------- */
 app.post('/get-csrf', async (req, res) => {
   try {
-    console.log('Launching Browserless (v2) session...');
+    console.log('Fetching cookies via Browserless...');
+    const cookies = await getCookiesFromBrowserless();
 
-    // ONLY ALLOWED FIELDS
-    const payload = {
-      url: REFERER_URL,
-      gotoOptions: { waitUntil: 'networkidle2', timeout: 60000 },
-      waitForTimeout: 8000,           // 8 seconds after network idle
-      viewport: { width: 1280, height: 720 },
-    };
-
-    const blResp = await fetch(BROWSERLESS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!blResp.ok) {
-      const txt = await blResp.text();
-      throw new Error(`Browserless ${blResp.status}: ${txt}`);
+    if (cookies.length === 0) {
+      return res.status(502).json({
+        success: false,
+        error: 'No cookies received (possible Cloudflare block)',
+      });
     }
 
-    const data = await blResp.json();
-
-    // Browserless v2 returns cookies directly
-    const cookies = data.cookies || [];
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
     const cookieString = cookies.map(c => `${c.name}=${encodeURIComponent(c.value)}`).join('; ');
 
-    console.log(`Got ${cookies.length} cookies, calling CSRF API...`);
+    console.log(`Got ${cookies.length} cookies → calling CSRF API`);
 
-    // Call CSRF endpoint
     const csrfResp = await fetch(CSRF_API, {
       method: 'GET',
       headers: {
         accept: '*/*',
         'accept-language': 'en-US,en;q=0.9',
         'content-type': 'application/json',
-        priority: 'u=1, i',
         referer: REFERER_URL,
         'sec-ch-ua': '"Google Chrome";v="141", "Not)A;Brand";v="8", "Chromium";v="141"',
         'sec-ch-ua-mobile': '?0',
@@ -106,23 +137,24 @@ app.post('/get-csrf', async (req, res) => {
       cf_clearance: cfClearance,
       timestamp: new Date().toISOString(),
     });
+
   } catch (err) {
-    console.error('Error:', err.message);
+    console.error('CSRF error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 /* -------------------------------------------------------------
-   Health check
+   Health
    ------------------------------------------------------------- */
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', endpoint: 'POST /get-csrf', docs: 'https://docs.browserless.io' });
+  res.json({ status: 'ok', endpoint: 'POST /get-csrf' });
 });
 
 /* -------------------------------------------------------------
-   Start server
+   Start
    ------------------------------------------------------------- */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server live on ${PORT}`);
 });
